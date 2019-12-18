@@ -22,7 +22,7 @@ import numpy as np
 for year in ['2007', '2012', '0712']:
   for split in ['train', 'val', 'trainval', 'test']:
     name = 'voc_{}_{}'.format(year, split)
-    __sets[name] = (lambda split=split, year=year: pascal_voc(split, year))
+    __sets[name] = (lambda split=split, year=year: pascal_voc(split, year)) #_sets[name]的value是一个pascal_voc对象。
 
 # Set up coco_2014_<split>
 for year in ['2014']:

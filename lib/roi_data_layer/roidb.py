@@ -19,17 +19,17 @@ def prepare_roidb(imdb):
     recorded.
     """
 
-    roidb = imdb.roidb
+    roidb = imdb.roidb #roidb是一个字典列表。
     if not (imdb.name.startswith('coco')):
         sizes = [PIL.Image.open(imdb.image_path_at(i)).size
                  for i in range(imdb.num_images)]
 
     for i in range(len(imdb.image_index)):
-        roidb[i]['img_id'] = imdb.image_id_at(i)
-        roidb[i]['image'] = imdb.image_path_at(i)
+        roidb[i]['img_id'] = imdb.image_id_at(i) #图片索引
+        roidb[i]['image'] = imdb.image_path_at(i) #图片的绝对路径
         if not (imdb.name.startswith('coco')):
-            roidb[i]['width'] = sizes[i][0]
-            roidb[i]['height'] = sizes[i][1]
+            roidb[i]['width'] = sizes[i][0] #图片的宽
+            roidb[i]['height'] = sizes[i][1] #图片的高
         # need gt_overlaps as a dense array for argmax
         gt_overlaps = roidb[i]['gt_overlaps'].toarray()
         # max overlap with gt over classes (columns)
@@ -98,7 +98,7 @@ def combined_roidb(imdb_names, training=True):
 
     def get_training_roidb(imdb):
         """Returns a roidb (Region of Interest database) for use in training."""
-        if cfg.TRAIN.USE_FLIPPED:
+        if cfg.TRAIN.USE_FLIPPED: #对图片进行翻转
             print('Appending horizontally-flipped training examples...')
             imdb.append_flipped_images()
             print('done')
@@ -112,7 +112,7 @@ def combined_roidb(imdb_names, training=True):
         return imdb.roidb
 
     def get_roidb(imdb_name):
-        imdb = get_imdb(imdb_name)
+        imdb = get_imdb(imdb_name) #获取PVOC对象
         print('Loaded dataset `{:s}` for training'.format(imdb.name))
         imdb.set_proposal_method(cfg.TRAIN.PROPOSAL_METHOD)
         print('Set proposal method: {:s}'.format(cfg.TRAIN.PROPOSAL_METHOD))

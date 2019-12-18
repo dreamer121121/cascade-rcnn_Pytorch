@@ -125,6 +125,9 @@ def parse_args():
 
 
 class sampler(Sampler):
+    '''
+    自写采样器
+    '''
     def __init__(self, train_size, batch_size):
         num_data = train_size
         self.num_per_batch = int(num_data / batch_size)
@@ -236,13 +239,14 @@ if __name__ == '__main__':
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    sampler_batch = sampler(train_size, args.batch_size)
+    sampler_batch = sampler(train_size, args.batch_size) #sampler_batch是一个迭代器
 
     # for k, j in enumerate(ratio_index):
     #     if j == 23225:
     #         print(k)
     #         break
 
+    # 构造数据集
     dataset = roibatchLoader(roidb, ratio_list, ratio_index, args.batch_size, \
                              imdb.num_classes, training=True)
     # print('roidb', roidb[23225])
