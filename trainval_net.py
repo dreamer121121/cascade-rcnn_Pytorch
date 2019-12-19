@@ -246,7 +246,7 @@ if __name__ == '__main__':
     #         print(k)
     #         break
 
-    # 构造数据集
+    # 构造数据集 返回一个Dataset对象。
     dataset = roibatchLoader(roidb, ratio_list, ratio_index, args.batch_size, \
                              imdb.num_classes, training=True)
     # print('roidb', roidb[23225])
@@ -256,208 +256,214 @@ if __name__ == '__main__':
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size,
                                              sampler=sampler_batch, num_workers=args.num_workers)
 
-    # initilize the tensor holder here.
-    im_data = torch.FloatTensor(1)
-    im_info = torch.FloatTensor(1)
-    num_boxes = torch.LongTensor(1)
-    gt_boxes = torch.FloatTensor(1)
 
-    # ship to cuda
-    if args.cuda:
-        im_data = im_data.cuda()
-        im_info = im_info.cuda()
-        num_boxes = num_boxes.cuda()
-        gt_boxes = gt_boxes.cuda()
+    print(len(dataset))
+    for i,(data,label) in enumerate(dataloader):
+        print(i)
 
-    # make variable
-    im_data = Variable(im_data)
-    im_info = Variable(im_info)
-    num_boxes = Variable(num_boxes)
-    gt_boxes = Variable(gt_boxes)
 
-    if args.cuda:
-        cfg.CUDA = True
-
-    # initilize the network here.
-    if args.cascade:
-        if args.net == 'detnet59':
-            FPN = detnet_cascade(imdb.classes, 59, pretrained=True, class_agnostic=args.class_agnostic)
-        else:
-            print("network is not defined")
-            pdb.set_trace()
-    else:
-        if args.net == 'detnet59':
-            FPN = detnet_noncascade(imdb.classes, 59, pretrained=True, class_agnostic=args.class_agnostic)
-        else:
-            print("network is not defined")
-            pdb.set_trace()
-
-    FPN.create_architecture()
-
-    lr = cfg.TRAIN.LEARNING_RATE
-    lr = args.lr
-    # tr_momentum = cfg.TRAIN.MOMENTUM
-    # tr_momentum = args.momentum
-
-    params = []
-    for key, value in dict(FPN.named_parameters()).items():
-        if value.requires_grad:
-            if 'bias' in key:
-                params += [{'params': [value], 'lr': lr * (cfg.TRAIN.DOUBLE_BIAS + 1), \
-                            'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
-            else:
-                params += [{'params': [value], 'lr': lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
-
-    if args.optimizer == "adam":
-        lr = lr * 0.1
-        optimizer = torch.optim.Adam(params)
-
-    elif args.optimizer == "sgd":
-        optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
-
-    if args.resume:
-        load_name = os.path.join(output_dir,
-                                 'fpn_{}_{}_{}.pth'.format(args.checksession, args.checkepoch, args.checkpoint))
-        _print("loading checkpoint %s" % (load_name), )
-        checkpoint = torch.load(load_name)
-        args.session = checkpoint['session']
-        args.start_epoch = checkpoint['epoch']
-        FPN.load_state_dict(checkpoint['model'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        lr = optimizer.param_groups[0]['lr']
-        if 'pooling_mode' in checkpoint.keys():
-            cfg.POOLING_MODE = checkpoint['pooling_mode']
-        _print("loaded checkpoint %s" % (load_name), )
-
-    if args.mGPUs:
-        FPN = nn.DataParallel(FPN)
-
-    if args.cuda:
-        FPN.cuda()
-
-    iters_per_epoch = int(train_size / args.batch_size)
-
-    for epoch in range(args.start_epoch, args.max_epochs):
-        # setting to train mode
-        FPN.train()
-        loss_temp = 0
-        start = time.time()
-
-        if epoch % (args.lr_decay_step + 1) == 0:
-            adjust_learning_rate(optimizer, args.lr_decay_gamma)
-            lr *= args.lr_decay_gamma
-
-        data_iter = iter(dataloader)
-
-        for step in range(iters_per_epoch):
-            data = data_iter.next()
-            im_data.data.resize_(data[0].size()).copy_(data[0])
-            im_info.data.resize_(data[1].size()).copy_(data[1])
-            gt_boxes.data.resize_(data[2].size()).copy_(data[2])
-            num_boxes.data.resize_(data[3].size()).copy_(data[3])
-
-            FPN.zero_grad()
-            if args.cascade:
-                _, _, _, rpn_loss_cls, rpn_loss_box, \
-                RCNN_loss_cls, RCNN_loss_bbox, RCNN_loss_cls_2nd, RCNN_loss_bbox_2nd, RCNN_loss_cls_3rd, RCNN_loss_bbox_3rd, \
-                roi_labels = FPN(im_data, im_info, gt_boxes, num_boxes)
-
-                loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
-                       + RCNN_loss_cls.mean() + RCNN_loss_bbox.mean() \
-                       + RCNN_loss_cls_2nd.mean() + RCNN_loss_bbox_2nd.mean() \
-                       + RCNN_loss_cls_3rd.mean() + RCNN_loss_bbox_3rd.mean()
-            else:
-                _, _, _, rpn_loss_cls, rpn_loss_box, RCNN_loss_cls, RCNN_loss_bbox, \
-                roi_labels = FPN(im_data, im_info, gt_boxes, num_boxes)
-
-                loss = rpn_loss_cls.mean() + rpn_loss_box.mean()+ RCNN_loss_cls.mean() + RCNN_loss_bbox.mean()
-
-            loss_temp += loss.data[0]
-
-            # backward
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            if step % args.disp_interval == 0:
-                end = time.time()
-                if step > 0:
-                    loss_temp /= args.disp_interval
-
-                if args.mGPUs:
-                    loss_rpn_cls = rpn_loss_cls.mean().data[0]
-                    loss_rpn_box = rpn_loss_box.mean().data[0]
-                    loss_rcnn_cls = RCNN_loss_cls.mean().data[0]
-                    loss_rcnn_box = RCNN_loss_bbox.mean().data[0]
-
-                    if args.cascade:
-                        loss_rcnn_cls_2nd = RCNN_loss_cls_2nd.mean().data[0]
-                        loss_rcnn_box_2nd = RCNN_loss_bbox_2nd.mean().data[0]
-                        loss_rcnn_cls_3rd = RCNN_loss_cls_3rd.mean().data[0]
-                        loss_rcnn_box_3rd = RCNN_loss_bbox_3rd.mean().data[0]
-
-                    fg_cnt = torch.sum(roi_labels.data.ne(0))
-                    bg_cnt = roi_labels.data.numel() - fg_cnt
-                else:
-                    loss_rpn_cls = rpn_loss_cls.data[0]
-                    loss_rpn_box = rpn_loss_box.data[0]
-                    loss_rcnn_cls = RCNN_loss_cls.data[0]
-                    loss_rcnn_box = RCNN_loss_bbox.data[0]
-
-                    if args.cascade:
-                        loss_rcnn_cls_2nd = RCNN_loss_cls_2nd.data[0]
-                        loss_rcnn_box_2nd = RCNN_loss_bbox_2nd.data[0]
-                        loss_rcnn_cls_3rd = RCNN_loss_cls_3rd.data[0]
-                        loss_rcnn_box_3rd = RCNN_loss_bbox_3rd.data[0]
-
-                    fg_cnt = torch.sum(roi_labels.data.ne(0))
-                    bg_cnt = roi_labels.data.numel() - fg_cnt
-
-                _print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
-                       % (args.session, epoch, step, iters_per_epoch, loss_temp, lr), )
-                _print("\t\t\tfg/bg=(%d/%d), time cost: %f" % (fg_cnt, bg_cnt, end - start), )
-
-                if args.cascade:
-                    _print("\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f, rcnn_cls_2nd: %.4f, "
-                           "rcnn_box_2nd %.4f, rcnn_cls_3rd: %.4f, rcnn_box_3rd %.4f" % (loss_rpn_cls, loss_rpn_box,
-                        loss_rcnn_cls, loss_rcnn_box, loss_rcnn_cls_2nd, loss_rcnn_box_2nd, loss_rcnn_cls_3rd, loss_rcnn_box_3rd), )
-                else:
-                    _print("\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f" \
-                            % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box), )
-
-                if args.use_tfboard:
-                    if args.cascade:
-                        scalars = [loss_temp, loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box, loss_rcnn_cls_2nd, loss_rcnn_box_2nd, loss_rcnn_cls_3rd, loss_rcnn_box_3rd]
-                        names = ['loss', 'loss_rpn_cls', 'loss_rpn_box', 'loss_rcnn_cls', 'loss_rcnn_box', 'loss_rcnn_cls_2nd', 'loss_rcnn_box_2nd', 'loss_rcnn_cls_3rd', 'loss_rcnn_box_3rd']
-                    else:
-                        scalars = [loss_temp, loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box]
-                        names = ['loss', 'loss_rpn_cls', 'loss_rpn_box', 'loss_rcnn_cls', 'loss_rcnn_box']
-                    write_scalars(writer, scalars, names, iters_per_epoch * (epoch - 1) + step, tag='train_loss')
-
-                loss_temp = 0
-                start = time.time()
-
-        if args.mGPUs:
-            save_name = os.path.join(output_dir, 'fpn_{}_{}_{}.pth'.format(args.session, epoch, step))
-            save_checkpoint({
-                'session': args.session,
-                'epoch': epoch + 1,
-                'model': FPN.module.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'pooling_mode': cfg.POOLING_MODE,
-                'class_agnostic': args.class_agnostic,
-            }, save_name)
-        else:
-            save_name = os.path.join(output_dir, 'fpn_{}_{}_{}.pth'.format(args.session, epoch, step))
-            save_checkpoint({
-                'session': args.session,
-                'epoch': epoch + 1,
-                'model': FPN.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'pooling_mode': cfg.POOLING_MODE,
-                'class_agnostic': args.class_agnostic,
-            }, save_name)
-        _print('save model: {}'.format(save_name), )
-
-        end = time.time()
-        print(end - start)
+    # # initilize the tensor holder here.
+    # im_data = torch.FloatTensor(1)
+    # im_info = torch.FloatTensor(1)
+    # num_boxes = torch.LongTensor(1)
+    # gt_boxes = torch.FloatTensor(1)
+    #
+    # # ship to cuda
+    # if args.cuda:
+    #     im_data = im_data.cuda()
+    #     im_info = im_info.cuda()
+    #     num_boxes = num_boxes.cuda()
+    #     gt_boxes = gt_boxes.cuda()
+    #
+    # # make variable
+    # im_data = Variable(im_data)
+    # im_info = Variable(im_info)
+    # num_boxes = Variable(num_boxes)
+    # gt_boxes = Variable(gt_boxes)
+    #
+    # if args.cuda:
+    #     cfg.CUDA = True
+    #
+    # # initilize the network here.
+    # if args.cascade:
+    #     if args.net == 'detnet59':
+    #         FPN = detnet_cascade(imdb.classes, 59, pretrained=True, class_agnostic=args.class_agnostic)
+    #     else:
+    #         print("network is not defined")
+    #         pdb.set_trace()
+    # else:
+    #     if args.net == 'detnet59':
+    #         FPN = detnet_noncascade(imdb.classes, 59, pretrained=True, class_agnostic=args.class_agnostic)
+    #     else:
+    #         print("network is not defined")
+    #         pdb.set_trace()
+    #
+    # FPN.create_architecture()
+    #
+    # lr = cfg.TRAIN.LEARNING_RATE
+    # lr = args.lr
+    # # tr_momentum = cfg.TRAIN.MOMENTUM
+    # # tr_momentum = args.momentum
+    #
+    # params = []
+    # for key, value in dict(FPN.named_parameters()).items():
+    #     if value.requires_grad:
+    #         if 'bias' in key:
+    #             params += [{'params': [value], 'lr': lr * (cfg.TRAIN.DOUBLE_BIAS + 1), \
+    #                         'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
+    #         else:
+    #             params += [{'params': [value], 'lr': lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    #
+    # if args.optimizer == "adam":
+    #     lr = lr * 0.1
+    #     optimizer = torch.optim.Adam(params)
+    #
+    # elif args.optimizer == "sgd":
+    #     optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
+    #
+    # if args.resume:
+    #     load_name = os.path.join(output_dir,
+    #                              'fpn_{}_{}_{}.pth'.format(args.checksession, args.checkepoch, args.checkpoint))
+    #     _print("loading checkpoint %s" % (load_name), )
+    #     checkpoint = torch.load(load_name)
+    #     args.session = checkpoint['session']
+    #     args.start_epoch = checkpoint['epoch']
+    #     FPN.load_state_dict(checkpoint['model'])
+    #     optimizer.load_state_dict(checkpoint['optimizer'])
+    #     lr = optimizer.param_groups[0]['lr']
+    #     if 'pooling_mode' in checkpoint.keys():
+    #         cfg.POOLING_MODE = checkpoint['pooling_mode']
+    #     _print("loaded checkpoint %s" % (load_name), )
+    #
+    # if args.mGPUs:
+    #     FPN = nn.DataParallel(FPN)
+    #
+    # if args.cuda:
+    #     FPN.cuda()
+    #
+    # iters_per_epoch = int(train_size / args.batch_size)
+    #
+    # for epoch in range(args.start_epoch, args.max_epochs):
+    #     # setting to train mode
+    #     FPN.train()
+    #     loss_temp = 0
+    #     start = time.time()
+    #
+    #     if epoch % (args.lr_decay_step + 1) == 0:
+    #         adjust_learning_rate(optimizer, args.lr_decay_gamma)
+    #         lr *= args.lr_decay_gamma
+    #
+    #     data_iter = iter(dataloader)
+    #
+    #     for step in range(iters_per_epoch):
+    #         data = data_iter.next()
+    #         im_data.data.resize_(data[0].size()).copy_(data[0])
+    #         im_info.data.resize_(data[1].size()).copy_(data[1])
+    #         gt_boxes.data.resize_(data[2].size()).copy_(data[2])
+    #         num_boxes.data.resize_(data[3].size()).copy_(data[3])
+    #
+    #         FPN.zero_grad()
+    #         if args.cascade:
+    #             _, _, _, rpn_loss_cls, rpn_loss_box, \
+    #             RCNN_loss_cls, RCNN_loss_bbox, RCNN_loss_cls_2nd, RCNN_loss_bbox_2nd, RCNN_loss_cls_3rd, RCNN_loss_bbox_3rd, \
+    #             roi_labels = FPN(im_data, im_info, gt_boxes, num_boxes)
+    #
+    #             loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
+    #                    + RCNN_loss_cls.mean() + RCNN_loss_bbox.mean() \
+    #                    + RCNN_loss_cls_2nd.mean() + RCNN_loss_bbox_2nd.mean() \
+    #                    + RCNN_loss_cls_3rd.mean() + RCNN_loss_bbox_3rd.mean()
+    #         else:
+    #             _, _, _, rpn_loss_cls, rpn_loss_box, RCNN_loss_cls, RCNN_loss_bbox, \
+    #             roi_labels = FPN(im_data, im_info, gt_boxes, num_boxes)
+    #
+    #             loss = rpn_loss_cls.mean() + rpn_loss_box.mean()+ RCNN_loss_cls.mean() + RCNN_loss_bbox.mean()
+    #
+    #         loss_temp += loss.data[0]
+    #
+    #         # backward
+    #         optimizer.zero_grad()
+    #         loss.backward()
+    #         optimizer.step()
+    #
+    #         if step % args.disp_interval == 0:
+    #             end = time.time()
+    #             if step > 0:
+    #                 loss_temp /= args.disp_interval
+    #
+    #             if args.mGPUs:
+    #                 loss_rpn_cls = rpn_loss_cls.mean().data[0]
+    #                 loss_rpn_box = rpn_loss_box.mean().data[0]
+    #                 loss_rcnn_cls = RCNN_loss_cls.mean().data[0]
+    #                 loss_rcnn_box = RCNN_loss_bbox.mean().data[0]
+    #
+    #                 if args.cascade:
+    #                     loss_rcnn_cls_2nd = RCNN_loss_cls_2nd.mean().data[0]
+    #                     loss_rcnn_box_2nd = RCNN_loss_bbox_2nd.mean().data[0]
+    #                     loss_rcnn_cls_3rd = RCNN_loss_cls_3rd.mean().data[0]
+    #                     loss_rcnn_box_3rd = RCNN_loss_bbox_3rd.mean().data[0]
+    #
+    #                 fg_cnt = torch.sum(roi_labels.data.ne(0))
+    #                 bg_cnt = roi_labels.data.numel() - fg_cnt
+    #             else:
+    #                 loss_rpn_cls = rpn_loss_cls.data[0]
+    #                 loss_rpn_box = rpn_loss_box.data[0]
+    #                 loss_rcnn_cls = RCNN_loss_cls.data[0]
+    #                 loss_rcnn_box = RCNN_loss_bbox.data[0]
+    #
+    #                 if args.cascade:
+    #                     loss_rcnn_cls_2nd = RCNN_loss_cls_2nd.data[0]
+    #                     loss_rcnn_box_2nd = RCNN_loss_bbox_2nd.data[0]
+    #                     loss_rcnn_cls_3rd = RCNN_loss_cls_3rd.data[0]
+    #                     loss_rcnn_box_3rd = RCNN_loss_bbox_3rd.data[0]
+    #
+    #                 fg_cnt = torch.sum(roi_labels.data.ne(0))
+    #                 bg_cnt = roi_labels.data.numel() - fg_cnt
+    #
+    #             _print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
+    #                    % (args.session, epoch, step, iters_per_epoch, loss_temp, lr), )
+    #             _print("\t\t\tfg/bg=(%d/%d), time cost: %f" % (fg_cnt, bg_cnt, end - start), )
+    #
+    #             if args.cascade:
+    #                 _print("\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f, rcnn_cls_2nd: %.4f, "
+    #                        "rcnn_box_2nd %.4f, rcnn_cls_3rd: %.4f, rcnn_box_3rd %.4f" % (loss_rpn_cls, loss_rpn_box,
+    #                     loss_rcnn_cls, loss_rcnn_box, loss_rcnn_cls_2nd, loss_rcnn_box_2nd, loss_rcnn_cls_3rd, loss_rcnn_box_3rd), )
+    #             else:
+    #                 _print("\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f" \
+    #                         % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box), )
+    #
+    #             if args.use_tfboard:
+    #                 if args.cascade:
+    #                     scalars = [loss_temp, loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box, loss_rcnn_cls_2nd, loss_rcnn_box_2nd, loss_rcnn_cls_3rd, loss_rcnn_box_3rd]
+    #                     names = ['loss', 'loss_rpn_cls', 'loss_rpn_box', 'loss_rcnn_cls', 'loss_rcnn_box', 'loss_rcnn_cls_2nd', 'loss_rcnn_box_2nd', 'loss_rcnn_cls_3rd', 'loss_rcnn_box_3rd']
+    #                 else:
+    #                     scalars = [loss_temp, loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box]
+    #                     names = ['loss', 'loss_rpn_cls', 'loss_rpn_box', 'loss_rcnn_cls', 'loss_rcnn_box']
+    #                 write_scalars(writer, scalars, names, iters_per_epoch * (epoch - 1) + step, tag='train_loss')
+    #
+    #             loss_temp = 0
+    #             start = time.time()
+    #
+    #     if args.mGPUs:
+    #         save_name = os.path.join(output_dir, 'fpn_{}_{}_{}.pth'.format(args.session, epoch, step))
+    #         save_checkpoint({
+    #             'session': args.session,
+    #             'epoch': epoch + 1,
+    #             'model': FPN.module.state_dict(),
+    #             'optimizer': optimizer.state_dict(),
+    #             'pooling_mode': cfg.POOLING_MODE,
+    #             'class_agnostic': args.class_agnostic,
+    #         }, save_name)
+    #     else:
+    #         save_name = os.path.join(output_dir, 'fpn_{}_{}_{}.pth'.format(args.session, epoch, step))
+    #         save_checkpoint({
+    #             'session': args.session,
+    #             'epoch': epoch + 1,
+    #             'model': FPN.state_dict(),
+    #             'optimizer': optimizer.state_dict(),
+    #             'pooling_mode': cfg.POOLING_MODE,
+    #             'class_agnostic': args.class_agnostic,
+    #         }, save_name)
+    #     _print('save model: {}'.format(save_name), )
+    #
+    #     end = time.time()
+    #     print(end - start)
